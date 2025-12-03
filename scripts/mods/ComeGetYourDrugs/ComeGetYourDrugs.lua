@@ -114,10 +114,23 @@ end)
 
 mod:hook_safe("Unit", "flow_event", function(unit, event)
     if event == "lua_deploy" and mod._owner_session_id then
-        local deployable_type = Unit.has_data(unit, "deployable_type") and Unit.get_data(unit, "deployable_type")
+        --[[
+        local is_deployable = Unit.has_data(unit, "deployable_type")
+        if not is_deployable then
+            mod:echo("is_deployable = "..tostring(is_deployable))
+            return
+        end
 
+        local deployable_type = Unit.get_data(unit, "deployable_type")
         if not deployable_type == "medical_crate" then
             -- This means the used item is not a medkit and not a stimm pack
+            mod:echo("is_deployable = "..tostring(is_deployable)..", deployable_type = "..tostring(deployable_type))
+            return
+        end
+        --]]
+
+        if Unit.has_data(unit, "pickup_type") then
+            mod:echo("Deployed item is (hopefully) not a medkit/stimm pack")
             return
         end
 
@@ -125,13 +138,18 @@ mod:hook_safe("Unit", "flow_event", function(unit, event)
         local deploying_player = Managers.player:player_from_session_id(mod._owner_session_id)
         local deploying_player_name = deploying_player._profile and deploying_player:name()
 
-        if not deploying_player or not player then
+        if not deploying_player then
+            mod:echo("deploying_player = nil/false")
+            return
+        elseif not player then
+            mod:echo("player = nil/false")
             return
         end
 
-        mod:echo("Player "..deploying_player_name.." placed deployable "..deployable_type)
+        mod:echo("Player "..deploying_player_name.." placed deployable")
 
         if not deploying_player == player then
+            mod:echo("Deploying player is not you")
             return
         end
 
