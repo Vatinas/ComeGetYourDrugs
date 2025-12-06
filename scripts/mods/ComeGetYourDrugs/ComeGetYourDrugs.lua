@@ -1,5 +1,28 @@
 local mod = get_mod("ComeGetYourDrugs")
 
+local SmartTag = require("scripts/extension_systems/smart_tag/smart_tag")
+local REMOVE_TAG_REASONS = SmartTag.REMOVE_TAG_REASONS
+local reason_cancelled_by_owner = REMOVE_TAG_REASONS.canceled_by_owner
+
+mod.waiting_for_tag = false
+mod.tag_id = nil
+mod.tracked_deployable = nil
+
+
+mod.remove_tag = function()
+    if not mod.tag_id then
+        mod:echo("Error - Tried to remove a tag when none are known to be placed by the mod")
+        return
+    end
+    local smart_tag_system = Managers.state.extension:system("smart_tag_system")
+    local player = Managers.player:local_player(1)
+    local player_unit = player.player_unit
+    mod:echo("Removing tag")
+    smart_tag_system:cancel_tag(mod.tag_id, player_unit, reason_cancelled_by_owner)
+    mod.tag_id = nil
+end
+
+
 local place_marker = function(pos)
     local smart_tag_system = Managers.state.extension:system("smart_tag_system")
 
@@ -13,32 +36,39 @@ local place_marker = function(pos)
     local player = Managers.player:local_player(1)
     local player_unit = player.player_unit
 
+    -- Remember that we're waiting for a tag to be placed so we can store the tag_id to remove it later
+    mod.waiting_for_tag = true
     -- Syntax: smart_tag_system:set_tag(template_name, player_unit, target_unit, target_location)
     smart_tag_system:set_tag(tag_type, player_unit, nil, pos)
+    --[[
+    local res = smart_tag_system:set_tag(tag_type, player_unit, nil, pos)
+    if res then
+        mod:echo("Returned from set_tag: "..tostring(res))
+    end
+    --]]
 end
 
---[[
-mod.place_marker_on_player = function()
-    local smart_tag_system = Managers.state.extension:system("smart_tag_system")
+-- Track placed tags to yoink the tag_id that we need
+mod:hook_safe(CLASS.SmartTagSystem, "_create_tag_locally", function(self, tag_id, template_name, tagger_unit, target_unit, target_location, replies, is_hotjoin_synced)
+    if mod.waiting_for_tag then
+        mod.tag_id = tag_id
+        mod.waiting_for_tag = false
+    end
+end)
 
-    local tag_types = {
-        "location_attention",
-        "location_ping",
-        "location_threat",
-    }
-    local tag_type = tag_types[1]
-
-    local player = Managers.player:local_player(1)
-    local player_unit = player.player_unit
-
-    local player_position = Unit.world_position(player_unit, 1)
-
-    -- Syntax: smart_tag_system:set_tag(template_name, player_unit, target_unit, target_location)
-    smart_tag_system:set_tag(tag_type, player_unit, nil, player_position)
+-- Check if we need to remove the tag
+mod.update = function(dt)
+    if not mod.tag_id then
+        return
+    end
+    if not Unit.alive(mod.tracked_deployable) then
+        -- Deployable has expired, let's remove its tag
+        mod.remove_tag()
+        mod.tracked_deployable = nil
+    end
 end
---]]
 
----[[
+
 mod.place_marker_on_player = function()
     local player = Managers.player:local_player(1)
     local player_unit = player.player_unit
@@ -47,41 +77,10 @@ mod.place_marker_on_player = function()
     -- Syntax: smart_tag_system:set_tag(template_name, player_unit, target_unit, target_location)
     place_marker(player_position)
 end
---]]
 
 
-local command_desc = "Testing function for ComeGetYourDrugs (WIP)"
-mod:command("place_pos_marker", command_desc, mod.place_marker_on_player)
-
-
-------
-
-local _place_unit_hook_function = function(self, action_settings, position, rotation, placed_on_unit)
-    --[[
-    local weapon_template = self._weapon_template
-	local pickup_name = action_settings.pickup_name or weapon_template.pickup_name
-    mod:echo("Item deployed - pickup_name = "..tostring(pickup_name))
-    --]]
-
-    local deployable_settings = action_settings.deployable_settings
-	local unit_template = deployable_settings.unit_template
-    --[[
-    mod:echo("Item deployed - unit_template is:")
-    for key, value in pairs(unit_template) do
-        local value_displayed = type(value) == string and value or "[Table]"
-        mod:echo(key.." - "..value_displayed)
-    end
-    --]]
-    mod:echo("Item deployed - unit_template = "..tostring(unit_template))
-
-    if unit_template == "medical_crate_deployable" then
-        place_marker(position)
-    end
-end
-
---mod:hook_safe(CLASS.ActionPlaceDeployable, "_place_unit", _place_unit_hook_function)
-
-
+mod:command("place_pos_marker", "Place a tag on the player's position", mod.place_marker_on_player)
+mod:command("remove_marker", "Remove the tag currently placed by the mod, if there is one", mod.remove_tag)
 
 
 ------
@@ -114,21 +113,6 @@ end)
 
 mod:hook_safe("Unit", "flow_event", function(unit, event)
     if event == "lua_deploy" and mod._owner_session_id then
-        --[[
-        local is_deployable = Unit.has_data(unit, "deployable_type")
-        if not is_deployable then
-            mod:echo("is_deployable = "..tostring(is_deployable))
-            return
-        end
-
-        local deployable_type = Unit.get_data(unit, "deployable_type")
-        if not deployable_type == "medical_crate" then
-            -- This means the used item is not a medkit and not a stimm pack
-            mod:echo("is_deployable = "..tostring(is_deployable)..", deployable_type = "..tostring(deployable_type))
-            return
-        end
-        --]]
-
         if Unit.has_data(unit, "pickup_type") then
             mod:echo("Deployed item is (hopefully) not a medkit/stimm pack")
             return
@@ -146,33 +130,19 @@ mod:hook_safe("Unit", "flow_event", function(unit, event)
             return
         end
 
-        mod:echo("Player "..deploying_player_name.." placed deployable")
+        local message_prefix = deploying_player_name.." placed a medkit/stimm pack - "
 
-        if not deploying_player == player then
-            mod:echo("Deploying player is not you")
+        if deploying_player ~= player then
+            mod:echo(message_prefix.."This is not you, I won't do anything")
             return
+        else
+            mod:echo(message_prefix.."This is you, placing marker")
         end
 
         local deployable_position = Unit.world_position(unit, 1)
 
         place_marker(deployable_position)
-
-        --local player_slot = player.slot and player:slot()
-        --local player_name = player._profile and player:name()
-        --local slot_color = mod:get("enable_slot_color") and player_slot and UISettings.player_slot_colors[player_slot]
-        --local suffix = is_local_player(player) and "self" or "others"
-        --local event_id = "auto_deployed_:s:_" .. suffix
-        --local message_type = "deploy_"
-
-        --[[
-        if Unit.has_data(unit, "pickup_type") then
-            event_id = string.gsub(event_id, ":s:", Unit.get_data(unit, "pickup_type"))
-            message_type = message_type .. "ammo"
-        else
-            event_id = string.gsub(event_id, ":s:", "medical_crate_deployable")
-            message_type = message_type .. "med"
-        end
-        --]]
+        mod.tracked_deployable = unit
 
         mod._owner_session_id = nil
     end
